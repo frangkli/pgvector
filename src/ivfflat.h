@@ -28,6 +28,8 @@
 #define IVFFLAT_NORM_PROC 2
 #define IVFFLAT_KMEANS_DISTANCE_PROC 3
 #define IVFFLAT_KMEANS_NORM_PROC 4
+#define IVFFLAT_NORMALIZE_PROC 5
+#define IVFFLAT_TYPE_SUPPORT_PROC 6
 
 #define IVFFLAT_VERSION	1
 #define IVFFLAT_MAGIC_NUMBER 0x14FF1A7
@@ -47,7 +49,8 @@ typedef enum IvfflatType
 {
 	IVFFLAT_TYPE_VECTOR,
 	IVFFLAT_TYPE_HALFVEC,
-	IVFFLAT_TYPE_BIT
+	IVFFLAT_TYPE_BIT,
+	IVFFLAT_TYPE_UNSUPPORTED
 }			IvfflatType;
 
 /* Build phases */
@@ -175,6 +178,7 @@ typedef struct IvfflatBuildState
 	FmgrInfo   *procinfo;
 	FmgrInfo   *normprocinfo;
 	FmgrInfo   *kmeansnormprocinfo;
+	FmgrInfo   *normalizeprocinfo;
 	Oid			collation;
 
 	/* Variables */
@@ -255,7 +259,9 @@ typedef struct IvfflatScanOpaqueData
 	/* Support functions */
 	FmgrInfo   *procinfo;
 	FmgrInfo   *normprocinfo;
+	FmgrInfo   *normalizeprocinfo;
 	Oid			collation;
+	Datum		(*distfunc) (FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2);
 
 	/* Lists */
 	pairingheap *listQueue;
@@ -275,7 +281,8 @@ void		VectorArrayFree(VectorArray arr);
 void		IvfflatKmeans(Relation index, VectorArray samples, VectorArray centers, IvfflatType type);
 FmgrInfo   *IvfflatOptionalProcInfo(Relation index, uint16 procnum);
 IvfflatType IvfflatGetType(Relation index);
-bool		IvfflatNormValue(FmgrInfo *procinfo, Oid collation, Datum *value, IvfflatType type);
+Datum		IvfflatNormValue(FmgrInfo *procinfo, Oid collation, Datum value);
+bool		IvfflatCheckNorm(FmgrInfo *procinfo, Oid collation, Datum value);
 int			IvfflatGetLists(Relation index);
 void		IvfflatGetMetaPageInfo(Relation index, int *lists, int *dimensions);
 void		IvfflatUpdateList(Relation index, ListInfo listInfo, BlockNumber insertPage, BlockNumber originalInsertPage, BlockNumber startPage, ForkNumber forkNum);

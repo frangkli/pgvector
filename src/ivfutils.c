@@ -3,11 +3,8 @@
 #include "access/generic_xlog.h"
 #include "catalog/pg_type.h"
 #include "fmgr.h"
-#include "halfvec.h"
 #include "ivfflat.h"
 #include "storage/bufmgr.h"
-#include "vector.h"
-#include "utils/syscache.h"
 
 /*
  * Allocate a vector array
@@ -70,60 +67,40 @@ IvfflatOptionalProcInfo(Relation index, uint16 procnum)
 IvfflatType
 IvfflatGetType(Relation index)
 {
+	FmgrInfo   *procinfo = IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_SUPPORT_PROC);
 	Oid			typid = TupleDescAttr(index->rd_att, 0)->atttypid;
-	HeapTuple	tuple;
-	Form_pg_type type;
 	IvfflatType result;
 
-	if (typid == BITOID)
-		return IVFFLAT_TYPE_BIT;
+	if (procinfo == NULL)
+		return IVFFLAT_TYPE_VECTOR;
 
-	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for type %u", typid);
+	result = (IvfflatType) DatumGetInt32(FunctionCall1(procinfo, ObjectIdGetDatum(typid)));
 
-	type = (Form_pg_type) GETSTRUCT(tuple);
-	if (strcmp(NameStr(type->typname), "vector") == 0)
-		result = IVFFLAT_TYPE_VECTOR;
-	else if (strcmp(NameStr(type->typname), "halfvec") == 0)
-		result = IVFFLAT_TYPE_HALFVEC;
-	else
-	{
-		ReleaseSysCache(tuple);
+	if (result == IVFFLAT_TYPE_UNSUPPORTED)
 		elog(ERROR, "type not supported for ivfflat index");
-	}
-
-	ReleaseSysCache(tuple);
 
 	return result;
 }
 
 /*
- * Divide by the norm
- *
- * Returns false if value should not be indexed
- *
- * The caller needs to free the pointer stored in value
- * if it's different than the original value
+ * Normalize value
+ */
+Datum
+IvfflatNormValue(FmgrInfo *procinfo, Oid collation, Datum value)
+{
+	if (procinfo == NULL)
+		return DirectFunctionCall1(l2_normalize, value);
+
+	return FunctionCall1Coll(procinfo, collation, value);
+}
+
+/*
+ * Check if non-zero norm
  */
 bool
-IvfflatNormValue(FmgrInfo *procinfo, Oid collation, Datum *value, IvfflatType type)
+IvfflatCheckNorm(FmgrInfo *procinfo, Oid collation, Datum value)
 {
-	double		norm = DatumGetFloat8(FunctionCall1Coll(procinfo, collation, *value));
-
-	if (norm > 0)
-	{
-		if (type == IVFFLAT_TYPE_VECTOR)
-			*value = DirectFunctionCall1(l2_normalize, *value);
-		else if (type == IVFFLAT_TYPE_HALFVEC)
-			*value = DirectFunctionCall1(halfvec_l2_normalize, *value);
-		else
-			elog(ERROR, "Unsupported type");
-
-		return true;
-	}
-
-	return false;
+	return DatumGetFloat8(FunctionCall1Coll(procinfo, collation, value)) > 0;
 }
 
 /*
@@ -268,3 +245,22 @@ IvfflatUpdateList(Relation index, ListInfo listInfo,
 		UnlockReleaseBuffer(buf);
 	}
 }
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(halfvec_ivfflat_support);
+Datum
+halfvec_ivfflat_support(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(IVFFLAT_TYPE_HALFVEC);
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(bit_ivfflat_support);
+Datum
+bit_ivfflat_support(PG_FUNCTION_ARGS)
+{
+	Oid			typid = PG_GETARG_OID(0);
+
+	if (typid == BITOID)
+		PG_RETURN_INT32(IVFFLAT_TYPE_BIT);
+	else
+		PG_RETURN_INT32(IVFFLAT_TYPE_UNSUPPORTED);
+};

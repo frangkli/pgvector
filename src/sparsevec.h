@@ -3,7 +3,7 @@
 
 #include "fmgr.h"
 
-#define SPARSEVEC_MAX_DIM 100000
+#define SPARSEVEC_MAX_DIM 1000000
 #define SPARSEVEC_MAX_NNZ 16000
 
 /* Ensure values are aligned */
@@ -23,6 +23,5 @@ typedef struct SparseVector
 }			SparseVector;
 
 SparseVector *InitSparseVector(int dim, int nnz);
-PGDLLEXPORT Datum sparsevec_l2_normalize(PG_FUNCTION_ARGS);
 
 #endif

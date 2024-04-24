@@ -3,10 +3,8 @@
 #include <float.h>
 
 #include "access/relscan.h"
-#include "bitvec.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
-#include "halfvec.h"
 #include "lib/pairingheap.h"
 #include "ivfflat.h"
 #include "miscadmin.h"
@@ -58,7 +56,7 @@ GetScanLists(IndexScanDesc scan, Datum value)
 			double		distance;
 
 			/* Use procinfo from the index instead of scan key for performance */
-			distance = DatumGetFloat8(FunctionCall2Coll(so->procinfo, so->collation, PointerGetDatum(&list->center), value));
+			distance = DatumGetFloat8(so->distfunc(so->procinfo, so->collation, PointerGetDatum(&list->center), value));
 
 			if (listCount < so->probes)
 			{
@@ -151,7 +149,7 @@ GetScanItems(IndexScanDesc scan, Datum value)
 				 * performance
 				 */
 				ExecClearTuple(slot);
-				slot->tts_values[0] = FunctionCall2Coll(so->procinfo, so->collation, datum, value);
+				slot->tts_values[0] = so->distfunc(so->procinfo, so->collation, datum, value);
 				slot->tts_isnull[0] = false;
 				slot->tts_values[1] = PointerGetDatum(&itup->t_tid);
 				slot->tts_isnull[1] = false;
@@ -180,6 +178,15 @@ GetScanItems(IndexScanDesc scan, Datum value)
 }
 
 /*
+ * Zero distance
+ */
+static Datum
+ZeroDistance(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2)
+{
+	return Float8GetDatum(0.0);
+}
+
+/*
  * Get scan value
  */
 static Datum
@@ -190,28 +197,21 @@ GetScanValue(IndexScanDesc scan)
 
 	if (scan->orderByData->sk_flags & SK_ISNULL)
 	{
-		IvfflatType type = IvfflatGetType(scan->indexRelation);
-
-		if (type == IVFFLAT_TYPE_VECTOR)
-			value = PointerGetDatum(InitVector(so->dimensions));
-		else if (type == IVFFLAT_TYPE_HALFVEC)
-			value = PointerGetDatum(InitHalfVector(so->dimensions));
-		else if (type == IVFFLAT_TYPE_BIT)
-			value = PointerGetDatum(InitBitVector(so->dimensions));
-		else
-			elog(ERROR, "Unsupported type");
+		value = PointerGetDatum(NULL);
+		so->distfunc = ZeroDistance;
 	}
 	else
 	{
 		value = scan->orderByData->sk_argument;
+		so->distfunc = FunctionCall2Coll;
 
 		/* Value should not be compressed or toasted */
 		Assert(!VARATT_IS_COMPRESSED(DatumGetPointer(value)));
 		Assert(!VARATT_IS_EXTENDED(DatumGetPointer(value)));
 
-		/* Fine if normalization fails */
+		/* Check normprocinfo since normalizeprocinfo not set for vector */
 		if (so->normprocinfo != NULL)
-			IvfflatNormValue(so->normprocinfo, so->collation, &value, IvfflatGetType(scan->indexRelation));
+			value = IvfflatNormValue(so->normalizeprocinfo, so->collation, value);
 	}
 
 	return value;
@@ -249,6 +249,7 @@ ivfflatbeginscan(Relation index, int nkeys, int norderbys)
 	/* Set support functions */
 	so->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
 	so->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
+	so->normalizeprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORMALIZE_PROC);
 	so->collation = index->rd_indcollation[0];
 
 	/* Create tuple description for sorting */

@@ -6,7 +6,6 @@
 #include "catalog/pg_type.h"
 #include "catalog/pg_type_d.h"
 #include "fmgr.h"
-#include "halfvec.h"
 #include "hnsw.h"
 #include "lib/pairingheap.h"
 #include "sparsevec.h"
@@ -14,8 +13,6 @@
 #include "utils/datum.h"
 #include "utils/memdebug.h"
 #include "utils/rel.h"
-#include "utils/syscache.h"
-#include "vector.h"
 
 #if PG_VERSION_NUM >= 130000
 #include "common/hashfn.h"
@@ -161,32 +158,17 @@ HnswOptionalProcInfo(Relation index, uint16 procnum)
 HnswType
 HnswGetType(Relation index)
 {
+	FmgrInfo   *procinfo = HnswOptionalProcInfo(index, HNSW_TYPE_SUPPORT_PROC);
 	Oid			typid = TupleDescAttr(index->rd_att, 0)->atttypid;
-	HeapTuple	tuple;
-	Form_pg_type type;
 	HnswType	result;
 
-	if (typid == BITOID)
-		return HNSW_TYPE_BIT;
+	if (procinfo == NULL)
+		return HNSW_TYPE_VECTOR;
 
-	tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(typid));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for type %u", typid);
+	result = (HnswType) DatumGetInt32(FunctionCall1(procinfo, ObjectIdGetDatum(typid)));
 
-	type = (Form_pg_type) GETSTRUCT(tuple);
-	if (strcmp(NameStr(type->typname), "vector") == 0)
-		result = HNSW_TYPE_VECTOR;
-	else if (strcmp(NameStr(type->typname), "halfvec") == 0)
-		result = HNSW_TYPE_HALFVEC;
-	else if (strcmp(NameStr(type->typname), "sparsevec") == 0)
-		result = HNSW_TYPE_SPARSEVEC;
-	else
-	{
-		ReleaseSysCache(tuple);
+	if (result == HNSW_TYPE_UNSUPPORTED)
 		elog(ERROR, "type not supported for hnsw index");
-	}
-
-	ReleaseSysCache(tuple);
 
 	return result;
 }
@@ -195,17 +177,12 @@ HnswGetType(Relation index)
  * Normalize value
  */
 Datum
-HnswNormValue(Datum value, HnswType type)
+HnswNormValue(FmgrInfo *procinfo, Oid collation, Datum value)
 {
-	/* TODO Remove type-specific code */
-	if (type == HNSW_TYPE_VECTOR)
+	if (procinfo == NULL)
 		return DirectFunctionCall1(l2_normalize, value);
-	else if (type == HNSW_TYPE_HALFVEC)
-		return DirectFunctionCall1(halfvec_l2_normalize, value);
-	else if (type == HNSW_TYPE_SPARSEVEC)
-		return DirectFunctionCall1(sparsevec_l2_normalize, value);
-	else
-		elog(ERROR, "Unsupported type");
+
+	return FunctionCall1Coll(procinfo, collation, value);
 }
 
 /*
@@ -1325,3 +1302,29 @@ HnswFindElementNeighbors(char *base, HnswElement element, HnswElement entryPoint
 		ep = w;
 	}
 }
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(halfvec_hnsw_support);
+Datum
+halfvec_hnsw_support(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(HNSW_TYPE_HALFVEC);
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(bit_hnsw_support);
+Datum
+bit_hnsw_support(PG_FUNCTION_ARGS)
+{
+	Oid			typid = PG_GETARG_OID(0);
+
+	if (typid == BITOID)
+		PG_RETURN_INT32(HNSW_TYPE_BIT);
+	else
+		PG_RETURN_INT32(HNSW_TYPE_UNSUPPORTED);
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(sparsevec_hnsw_support);
+Datum
+sparsevec_hnsw_support(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(HNSW_TYPE_SPARSEVEC);
+};

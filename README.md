@@ -81,7 +81,7 @@ Get the nearest neighbors by L2 distance
 SELECT * FROM items ORDER BY embedding <-> '[3,1,2]' LIMIT 5;
 ```
 
-Also supports inner product (`<#>`) and cosine distance (`<=>`)
+Also supports inner product (`<#>`), cosine distance (`<=>`), and L1 distance (`<+>`, unreleased)
 
 Note: `<#>` returns the negative inner product since Postgres only supports `ASC` order index scans on operators
 
@@ -143,6 +143,7 @@ Supported distance functions are:
 - `<->` - L2 distance
 - `<#>` - (negative) inner product
 - `<=>` - cosine distance
+- `<+>` - L1 distance (unreleased)
 
 Get the nearest neighbors to a row
 
@@ -225,6 +226,12 @@ Cosine distance
 
 ```sql
 CREATE INDEX ON items USING hnsw (embedding vector_cosine_ops);
+```
+
+L1 distance - unreleased
+
+```sql
+CREATE INDEX ON items USING hnsw (embedding vector_l1_ops);
 ```
 
 Hamming distance - unreleased
@@ -347,6 +354,12 @@ Cosine distance
 
 ```sql
 CREATE INDEX ON items USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+```
+
+Hamming distance - unreleased
+
+```sql
+CREATE INDEX ON items USING ivfflat (embedding bit_hamming_ops) WITH (lists = 100);
 ```
 
 Supported types are:
@@ -855,6 +868,7 @@ Operator | Description | Added
 <-> | Euclidean distance |
 <#> | negative inner product |
 <=> | cosine distance |
+<+> | taxicab distance | unreleased
 
 ### Vector Functions
 
@@ -892,6 +906,7 @@ Operator | Description | Added
 <-> | Euclidean distance | unreleased
 <#> | negative inner product | unreleased
 <=> | cosine distance | unreleased
+<+> | taxicab distance | unreleased
 
 ### Halfvec Functions
 
@@ -943,6 +958,7 @@ Operator | Description | Added
 <-> | Euclidean distance | unreleased
 <#> | negative inner product | unreleased
 <=> | cosine distance | unreleased
+<+> | taxicab distance | unreleased
 
 ### Sparsevec Functions
 
