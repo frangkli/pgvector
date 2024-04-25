@@ -1,8 +1,11 @@
 #include "postgres.h"
 
 #include "access/generic_xlog.h"
+#include "bitvec.h"
 #include "catalog/pg_type.h"
 #include "fmgr.h"
+#include "halfutils.h"
+#include "halfvec.h"
 #include "ivfflat.h"
 #include "storage/bufmgr.h"
 
@@ -59,27 +62,6 @@ IvfflatOptionalProcInfo(Relation index, uint16 procnum)
 		return NULL;
 
 	return index_getprocinfo(index, 1, procnum);
-}
-
-/*
- * Get type
- */
-IvfflatType
-IvfflatGetType(Relation index)
-{
-	FmgrInfo   *procinfo = IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_SUPPORT_PROC);
-	Oid			typid = TupleDescAttr(index->rd_att, 0)->atttypid;
-	IvfflatType result;
-
-	if (procinfo == NULL)
-		return IVFFLAT_TYPE_VECTOR;
-
-	result = (IvfflatType) DatumGetInt32(FunctionCall1(procinfo, ObjectIdGetDatum(typid)));
-
-	if (result == IVFFLAT_TYPE_UNSUPPORTED)
-		elog(ERROR, "type not supported for ivfflat index");
-
-	return result;
 }
 
 /*
@@ -246,21 +228,110 @@ IvfflatUpdateList(Relation index, ListInfo listInfo,
 	}
 }
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(halfvec_ivfflat_support);
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_halfvec_max_dims);
 Datum
-halfvec_ivfflat_support(PG_FUNCTION_ARGS)
+ivfflat_halfvec_max_dims(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(IVFFLAT_TYPE_HALFVEC);
+	PG_RETURN_INT32(IVFFLAT_MAX_DIM * 2);
 };
 
-PGDLLEXPORT PG_FUNCTION_INFO_V1(bit_ivfflat_support);
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_bit_max_dims);
 Datum
-bit_ivfflat_support(PG_FUNCTION_ARGS)
+ivfflat_bit_max_dims(PG_FUNCTION_ARGS)
 {
-	Oid			typid = PG_GETARG_OID(0);
-
-	if (typid == BITOID)
-		PG_RETURN_INT32(IVFFLAT_TYPE_BIT);
-	else
-		PG_RETURN_INT32(IVFFLAT_TYPE_UNSUPPORTED);
+	PG_RETURN_INT32(IVFFLAT_MAX_DIM * 32);
 };
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_vector_update_center);
+Datum
+ivfflat_vector_update_center(PG_FUNCTION_ARGS)
+{
+	Vector	   *vec = PG_GETARG_VECTOR_P(0);
+	int			dimensions = PG_GETARG_INT32(1);
+	float	   *x = (float *) PG_GETARG_POINTER(2);
+
+	SET_VARSIZE(vec, VECTOR_SIZE(dimensions));
+	vec->dim = dimensions;
+
+	for (int k = 0; k < dimensions; k++)
+		vec->x[k] = x[k];
+
+	PG_RETURN_VOID();
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_halfvec_update_center);
+Datum
+ivfflat_halfvec_update_center(PG_FUNCTION_ARGS)
+{
+	HalfVector *vec = PG_GETARG_HALFVEC_P(0);
+	int			dimensions = PG_GETARG_INT32(1);
+	float	   *x = (float *) PG_GETARG_POINTER(2);
+
+	SET_VARSIZE(vec, HALFVEC_SIZE(dimensions));
+	vec->dim = dimensions;
+
+	for (int k = 0; k < dimensions; k++)
+		vec->x[k] = Float4ToHalfUnchecked(x[k]);
+
+	PG_RETURN_VOID();
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_bit_update_center);
+Datum
+ivfflat_bit_update_center(PG_FUNCTION_ARGS)
+{
+	VarBit	   *vec = PG_GETARG_VARBIT_P(0);
+	int			dimensions = PG_GETARG_INT32(1);
+	float	   *x = (float *) PG_GETARG_POINTER(2);
+	unsigned char *nx = VARBITS(vec);
+
+	SET_VARSIZE(vec, VARBITTOTALLEN(dimensions));
+	VARBITLEN(vec) = dimensions;
+
+	for (uint32 k = 0; k < VARBITBYTES(vec); k++)
+		nx[k] = 0;
+
+	for (int k = 0; k < dimensions; k++)
+		nx[k / 8] |= (x[k] > 0.5 ? 1 : 0) << (7 - (k % 8));
+
+	PG_RETURN_VOID();
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_vector_sum_center);
+Datum
+ivfflat_vector_sum_center(PG_FUNCTION_ARGS)
+{
+	Vector	   *vec = PG_GETARG_VECTOR_P(0);
+	float	   *x = (float *) PG_GETARG_POINTER(1);
+
+	for (int k = 0; k < vec->dim; k++)
+		x[k] += vec->x[k];
+
+	PG_RETURN_VOID();
+};
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_halfvec_sum_center);
+Datum
+ivfflat_halfvec_sum_center(PG_FUNCTION_ARGS)
+{
+	HalfVector *vec = PG_GETARG_HALFVEC_P(0);
+	float	   *x = (float *) PG_GETARG_POINTER(1);
+
+	for (int k = 0; k < vec->dim; k++)
+		x[k] += HalfToFloat4(vec->x[k]);
+
+	PG_RETURN_VOID();
+}
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(ivfflat_bit_sum_center);
+Datum
+ivfflat_bit_sum_center(PG_FUNCTION_ARGS)
+{
+	VarBit	   *vec = PG_GETARG_VARBIT_P(0);
+	float	   *x = (float *) PG_GETARG_POINTER(1);
+
+	for (int k = 0; k < VARBITLEN(vec); k++)
+		x[k] += (float) (((VARBITS(vec)[k / 8]) >> (7 - (k % 8))) & 0x01);
+
+	PG_RETURN_VOID();
+}

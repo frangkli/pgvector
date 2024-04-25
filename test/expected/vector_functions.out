@@ -182,6 +182,18 @@ SELECT vector_norm('[3e37,4e37]')::real;
        5e+37
 (1 row)
 
+SELECT vector_norm('[0,0]');
+ vector_norm 
+-------------
+           0
+(1 row)
+
+SELECT vector_norm('[2]');
+ vector_norm 
+-------------
+           2
+(1 row)
+
 SELECT l2_distance('[0,0]'::vector, '[3,4]');
  l2_distance 
 -------------
@@ -418,6 +430,20 @@ SELECT subvector('[1,2,3,4,5]'::vector, 3, -1);
 ERROR:  vector must have at least 1 dimension
 SELECT subvector('[1,2,3,4,5]'::vector, -1, 2);
 ERROR:  vector must have at least 1 dimension
+SELECT subvector('[1,2,3,4,5]'::vector, 2147483647, 10);
+ERROR:  vector must have at least 1 dimension
+SELECT subvector('[1,2,3,4,5]'::vector, 3, 2147483647);
+ subvector 
+-----------
+ [3,4,5]
+(1 row)
+
+SELECT subvector('[1,2,3,4,5]'::vector, -2147483644, 2147483647);
+ subvector 
+-----------
+ [1,2]
+(1 row)
+
 SELECT avg(v) FROM unnest(ARRAY['[1,2,3]'::vector, '[3,5,7]']) v;
     avg    
 -----------

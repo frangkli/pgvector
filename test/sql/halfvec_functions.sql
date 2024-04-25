@@ -40,6 +40,8 @@ SELECT vector_dims('[1,2,3]'::halfvec);
 SELECT round(l2_norm('[1,1]'::halfvec)::numeric, 5);
 SELECT l2_norm('[3,4]'::halfvec);
 SELECT l2_norm('[0,1]'::halfvec);
+SELECT l2_norm('[0,0]'::halfvec);
+SELECT l2_norm('[2]'::halfvec);
 
 SELECT l2_distance('[0,0]'::halfvec, '[3,4]');
 SELECT l2_distance('[0,0]'::halfvec, '[0,1]');
@@ -88,6 +90,9 @@ SELECT subvector('[1,2,3,4,5]'::halfvec, 3, 9);
 SELECT subvector('[1,2,3,4,5]'::halfvec, 1, 0);
 SELECT subvector('[1,2,3,4,5]'::halfvec, 3, -1);
 SELECT subvector('[1,2,3,4,5]'::halfvec, -1, 2);
+SELECT subvector('[1,2,3,4,5]'::halfvec, 2147483647, 10);
+SELECT subvector('[1,2,3,4,5]'::halfvec, 3, 2147483647);
+SELECT subvector('[1,2,3,4,5]'::halfvec, -2147483644, 2147483647);
 
 SELECT avg(v) FROM unnest(ARRAY['[1,2,3]'::halfvec, '[3,5,7]']) v;
 SELECT avg(v) FROM unnest(ARRAY['[1,2,3]'::halfvec, '[3,5,7]', NULL]) v;

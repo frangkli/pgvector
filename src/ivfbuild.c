@@ -323,29 +323,28 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
  * Get max dimensions
  */
 static int
-GetMaxDimensions(IvfflatType type)
+GetMaxDimensions(Relation index)
 {
-	int			maxDimensions = IVFFLAT_MAX_DIM;
+	FmgrInfo   *procinfo = IvfflatOptionalProcInfo(index, IVFFLAT_MAX_DIMS_PROC);
 
-	if (type == IVFFLAT_TYPE_HALFVEC)
-		maxDimensions *= 2;
-	else if (type == IVFFLAT_TYPE_BIT)
-		maxDimensions *= 32;
+	if (procinfo == NULL)
+		return IVFFLAT_MAX_DIM;
 
-	return maxDimensions;
+	return DatumGetInt32(FunctionCall1(procinfo, PointerGetDatum(NULL)));
 }
 
 /*
  * Get item size
  */
 static Size
-GetItemSize(IvfflatType type, int dimensions)
+GetItemSize(int maxDimensions, int dimensions)
 {
-	if (type == IVFFLAT_TYPE_VECTOR)
+	/* TODO Improve */
+	if (maxDimensions == IVFFLAT_MAX_DIM)
 		return VECTOR_SIZE(dimensions);
-	else if (type == IVFFLAT_TYPE_HALFVEC)
+	else if (maxDimensions == IVFFLAT_MAX_DIM * 2)
 		return HALFVEC_SIZE(dimensions);
-	else if (type == IVFFLAT_TYPE_BIT)
+	else if (maxDimensions == IVFFLAT_MAX_DIM * 32)
 		return VARBITTOTALLEN(dimensions);
 	else
 		elog(ERROR, "Unsupported type");
@@ -362,12 +361,15 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 	buildstate->heap = heap;
 	buildstate->index = index;
 	buildstate->indexInfo = indexInfo;
-	buildstate->type = IvfflatGetType(index);
 
 	buildstate->lists = IvfflatGetLists(index);
 	buildstate->dimensions = TupleDescAttr(index->rd_att, 0)->atttypmod;
 
-	maxDimensions = GetMaxDimensions(buildstate->type);
+	/* Disallow varbit since require fixed dimensions */
+	if (TupleDescAttr(index->rd_att, 0)->atttypid == VARBITOID)
+		elog(ERROR, "type not supported for ivfflat index");
+
+	maxDimensions = GetMaxDimensions(index);
 
 	/* Require column to have dimensions to be indexed */
 	if (buildstate->dimensions < 0)
@@ -398,7 +400,7 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 
 	buildstate->slot = MakeSingleTupleTableSlot(buildstate->tupdesc, &TTSOpsVirtual);
 
-	buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions, GetItemSize(buildstate->type, buildstate->dimensions));
+	buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions, GetItemSize(maxDimensions, buildstate->dimensions));
 	buildstate->listInfo = palloc(sizeof(ListInfo) * buildstate->lists);
 
 	buildstate->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
@@ -468,7 +470,7 @@ ComputeCenters(IvfflatBuildState * buildstate)
 	}
 
 	/* Calculate centers */
-	IvfflatBench("k-means", IvfflatKmeans(buildstate->index, buildstate->samples, buildstate->centers, buildstate->type));
+	IvfflatBench("k-means", IvfflatKmeans(buildstate->index, buildstate->samples, buildstate->centers));
 
 	/* Free samples before we allocate more memory */
 	VectorArrayFree(buildstate->samples);
@@ -523,10 +525,13 @@ CreateListPages(Relation index, VectorArray centers, int dimensions,
 	{
 		OffsetNumber offno;
 
+		/* Zero memory for each list */
+		MemSet(list, 0, listSize);
+
 		/* Load list */
 		list->startPage = InvalidBlockNumber;
 		list->insertPage = InvalidBlockNumber;
-		memcpy(&list->center, VectorArrayGet(centers, i), centers->itemsize);
+		memcpy(&list->center, VectorArrayGet(centers, i), VARSIZE_ANY(VectorArrayGet(centers, i)));
 
 		/* Ensure free space */
 		if (PageGetFreeSpace(page) < listSize)
