@@ -98,29 +98,24 @@ CheckIndex(int32 *indices, int i, int dim)
 {
 	int32		index = indices[i];
 
-	/* TODO Better error message for binary format */
-	if (index < 0)
+	if (index < 0 || index >= dim)
+	{
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
-				 errmsg("index must be greater than zero")));
-
-	/* TODO Better error message for binary format */
-	if (index >= dim)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_EXCEPTION),
-				 errmsg("index must be less than or equal to dimensions")));
+				 errmsg("sparsevec index out of bounds")));
+	}
 
 	if (i > 0)
 	{
 		if (index < indices[i - 1])
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_EXCEPTION),
-					 errmsg("indexes must be in ascending order")));
+					 errmsg("sparsevec indices must be in ascending order")));
 
 		if (index == indices[i - 1])
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_EXCEPTION),
-					 errmsg("indexes must not contain duplicates")));
+					 errmsg("sparsevec indices must not contain duplicates")));
 	}
 }
 
@@ -249,7 +244,6 @@ sparsevec_in(PG_FUNCTION_ARGS)
 			long		index;
 			float		value;
 
-			/* TODO Better error */
 			if (nnz == maxNnz)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
@@ -527,6 +521,7 @@ sparsevec_recv(PG_FUNCTION_ARGS)
 	result = InitSparseVector(dim, nnz);
 	values = SPARSEVEC_VALUES(result);
 
+	/* Binary representation uses zero-based numbering for indices */
 	for (int i = 0; i < nnz; i++)
 	{
 		result->indices[i] = pq_getmsgint(buf, sizeof(int32));
@@ -537,6 +532,7 @@ sparsevec_recv(PG_FUNCTION_ARGS)
 	{
 		values[i] = pq_getmsgfloat4(buf);
 		CheckElement(values[i]);
+
 		if (values[i] == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_EXCEPTION),
@@ -561,8 +557,11 @@ sparsevec_send(PG_FUNCTION_ARGS)
 	pq_sendint(&buf, svec->dim, sizeof(int32));
 	pq_sendint(&buf, svec->nnz, sizeof(int32));
 	pq_sendint(&buf, svec->unused, sizeof(int32));
+
+	/* Binary representation uses zero-based numbering for indices */
 	for (int i = 0; i < svec->nnz; i++)
 		pq_sendint(&buf, svec->indices[i], sizeof(int32));
+
 	for (int i = 0; i < svec->nnz; i++)
 		pq_sendfloat4(&buf, values[i]);
 

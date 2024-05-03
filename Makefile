@@ -1,5 +1,5 @@
 EXTENSION = vector
-EXTVERSION = 0.6.2
+EXTVERSION = 0.7.0
 
 MODULE_big = vector
 DATA = $(wildcard sql/*--*.sql)
@@ -10,6 +10,7 @@ TESTS = $(wildcard test/sql/*.sql)
 REGRESS = $(patsubst test/sql/%.sql,%,$(TESTS))
 REGRESS_OPTS = --inputdir=test --load-extension=$(EXTENSION)
 
+# To compile for portability, run: make OPTFLAGS=""
 OPTFLAGS = -march=native
 
 # Mac ARM doesn't always support -march=native

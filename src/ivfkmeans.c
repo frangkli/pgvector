@@ -13,17 +13,6 @@
 #include "utils/memutils.h"
 #include "vector.h"
 
-/* Support functions */
-PGDLLEXPORT Datum ivfflat_vector_update_center(PG_FUNCTION_ARGS);
-PGDLLEXPORT Datum ivfflat_vector_sum_center(PG_FUNCTION_ARGS);
-
-typedef struct KmeansState
-{
-	int			dimensions;
-	FmgrInfo   *updatecenterprocinfo;
-	FmgrInfo   *sumcenterprocinfo;
-}			KmeansState;
-
 /*
  * Initialize with kmeans++
  *
@@ -103,7 +92,7 @@ InitCenters(Relation index, VectorArray samples, VectorArray centers, float *low
  * Norm centers
  */
 static void
-NormCenters(FmgrInfo *normalizeprocinfo, Oid collation, VectorArray centers)
+NormCenters(const IvfflatTypeInfo * typeInfo, Oid collation, VectorArray centers)
 {
 	MemoryContext normCtx = AllocSetContextCreate(CurrentMemoryContext,
 												  "Ivfflat norm temporary context",
@@ -113,7 +102,7 @@ NormCenters(FmgrInfo *normalizeprocinfo, Oid collation, VectorArray centers)
 	for (int j = 0; j < centers->length; j++)
 	{
 		Datum		center = PointerGetDatum(VectorArrayGet(centers, j));
-		Datum		newCenter = IvfflatNormValue(normalizeprocinfo, collation, center);
+		Datum		newCenter = IvfflatNormValue(typeInfo, collation, center);
 		Size		size = VARSIZE_ANY(DatumGetPointer(newCenter));
 
 		if (size > centers->itemsize)
@@ -127,25 +116,15 @@ NormCenters(FmgrInfo *normalizeprocinfo, Oid collation, VectorArray centers)
 	MemoryContextDelete(normCtx);
 }
 
-static void
-UpdateCenter(FmgrInfo *procinfo, Pointer center, int dimensions, float *x)
-{
-	if (procinfo == NULL)
-		DirectFunctionCall3(ivfflat_vector_update_center, PointerGetDatum(center), Int32GetDatum(dimensions), PointerGetDatum(x));
-	else
-		FunctionCall3(procinfo, PointerGetDatum(center), Int32GetDatum(dimensions), PointerGetDatum(x));
-}
-
 /*
  * Quick approach if we have no data
  */
 static void
-RandomCenters(Relation index, VectorArray centers, KmeansState * kmeansstate)
+RandomCenters(Relation index, VectorArray centers, const IvfflatTypeInfo * typeInfo)
 {
 	int			dimensions = centers->dim;
-	Oid			collation = index->rd_indcollation[0];
 	FmgrInfo   *normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
-	FmgrInfo   *normalizeprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORMALIZE_PROC);
+	Oid			collation = index->rd_indcollation[0];
 	float	   *x = (float *) palloc(sizeof(float) * dimensions);
 
 	/* Fill with random data */
@@ -156,15 +135,13 @@ RandomCenters(Relation index, VectorArray centers, KmeansState * kmeansstate)
 		for (int i = 0; i < dimensions; i++)
 			x[i] = (float) RandomDouble();
 
-		UpdateCenter(kmeansstate->updatecenterprocinfo, center, dimensions, x);
+		typeInfo->updateCenter(center, dimensions, x);
 
 		centers->length++;
 	}
 
 	if (normprocinfo != NULL)
-		NormCenters(normalizeprocinfo, collation, centers);
-
-	pfree(x);
+		NormCenters(typeInfo, collation, centers);
 }
 
 #ifdef IVFFLAT_MEMORY
@@ -184,26 +161,17 @@ ShowMemoryUsage(MemoryContext context, Size estimatedSize)
 }
 #endif
 
-static void
-SumCenter(FmgrInfo *procinfo, Pointer sample, float *x)
-{
-	if (procinfo == NULL)
-		DirectFunctionCall2(ivfflat_vector_sum_center, PointerGetDatum(sample), PointerGetDatum(x));
-	else
-		FunctionCall2(procinfo, PointerGetDatum(sample), PointerGetDatum(x));
-}
-
 /*
  * Sum centers
  */
 static void
-SumCenters(VectorArray samples, float *agg, int *closestCenters, KmeansState * kmeansstate)
+SumCenters(VectorArray samples, float *agg, int *closestCenters, const IvfflatTypeInfo * typeInfo)
 {
 	for (int j = 0; j < samples->length; j++)
 	{
-		float	   *x = agg + ((int64) closestCenters[j] * kmeansstate->dimensions);
+		float	   *x = agg + ((int64) closestCenters[j] * samples->dim);
 
-		SumCenter(kmeansstate->sumcenterprocinfo, VectorArrayGet(samples, j), x);
+		typeInfo->sumCenter(VectorArrayGet(samples, j), x);
 	}
 }
 
@@ -211,13 +179,13 @@ SumCenters(VectorArray samples, float *agg, int *closestCenters, KmeansState * k
  * Update centers
  */
 static void
-UpdateCenters(float *agg, VectorArray centers, KmeansState * kmeansstate)
+UpdateCenters(float *agg, VectorArray centers, const IvfflatTypeInfo * typeInfo)
 {
 	for (int j = 0; j < centers->length; j++)
 	{
-		float	   *x = agg + ((int64) j * kmeansstate->dimensions);
+		float	   *x = agg + ((int64) j * centers->dim);
 
-		UpdateCenter(kmeansstate->updatecenterprocinfo, VectorArrayGet(centers, j), centers->dim, x);
+		typeInfo->updateCenter(VectorArrayGet(centers, j), centers->dim, x);
 	}
 }
 
@@ -225,9 +193,9 @@ UpdateCenters(float *agg, VectorArray centers, KmeansState * kmeansstate)
  * Compute new centers
  */
 static void
-ComputeNewCenters(VectorArray samples, float *agg, VectorArray newCenters, int *centerCounts, int *closestCenters, FmgrInfo *normprocinfo, FmgrInfo *normalizeprocinfo, Oid collation, KmeansState * kmeansstate)
+ComputeNewCenters(VectorArray samples, float *agg, VectorArray newCenters, int *centerCounts, int *closestCenters, FmgrInfo *normprocinfo, Oid collation, const IvfflatTypeInfo * typeInfo)
 {
-	int			dimensions = kmeansstate->dimensions;
+	int			dimensions = newCenters->dim;
 	int			numCenters = newCenters->length;
 	int			numSamples = samples->length;
 
@@ -243,7 +211,7 @@ ComputeNewCenters(VectorArray samples, float *agg, VectorArray newCenters, int *
 	}
 
 	/* Increment sum of closest center */
-	SumCenters(samples, agg, closestCenters, kmeansstate);
+	SumCenters(samples, agg, closestCenters, typeInfo);
 
 	/* Increment count of closest center */
 	for (int j = 0; j < numSamples; j++)
@@ -276,11 +244,11 @@ ComputeNewCenters(VectorArray samples, float *agg, VectorArray newCenters, int *
 	}
 
 	/* Set new centers */
-	UpdateCenters(agg, newCenters, kmeansstate);
+	UpdateCenters(agg, newCenters, typeInfo);
 
 	/* Normalize if needed */
 	if (normprocinfo != NULL)
-		NormCenters(normalizeprocinfo, collation, newCenters);
+		NormCenters(typeInfo, collation, newCenters);
 }
 
 /*
@@ -292,11 +260,10 @@ ComputeNewCenters(VectorArray samples, float *agg, VectorArray newCenters, int *
  * https://www.aaai.org/Papers/ICML/2003/ICML03-022.pdf
  */
 static void
-ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, KmeansState * kmeansstate)
+ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, const IvfflatTypeInfo * typeInfo)
 {
 	FmgrInfo   *procinfo;
 	FmgrInfo   *normprocinfo;
-	FmgrInfo   *normalizeprocinfo;
 	Oid			collation;
 	int			dimensions = centers->dim;
 	int			numCenters = centers->maxlen;
@@ -310,8 +277,6 @@ ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, KmeansStat
 	float	   *s;
 	float	   *halfcdist;
 	float	   *newcdist;
-	MemoryContext kmeansCtx;
-	MemoryContext oldCtx;
 
 	/* Calculate allocation sizes */
 	Size		samplesSize = VECTOR_ARRAY_SIZE(samples->maxlen, samples->itemsize);
@@ -344,14 +309,7 @@ ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, KmeansStat
 	/* Set support functions */
 	procinfo = index_getprocinfo(index, 1, IVFFLAT_KMEANS_DISTANCE_PROC);
 	normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
-	normalizeprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORMALIZE_PROC);
 	collation = index->rd_indcollation[0];
-
-	/* Use memory context */
-	kmeansCtx = AllocSetContextCreate(CurrentMemoryContext,
-									  "Ivfflat kmeans temporary context",
-									  ALLOCSET_DEFAULT_SIZES);
-	oldCtx = MemoryContextSwitchTo(kmeansCtx);
 
 	/* Allocate space */
 	/* Use float instead of double to save memory */
@@ -369,7 +327,7 @@ ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, KmeansStat
 	newCenters->length = numCenters;
 
 #ifdef IVFFLAT_MEMORY
-	ShowMemoryUsage(oldCtx, totalSize);
+	ShowMemoryUsage(MemoryContextGetParent(CurrentMemoryContext));
 #endif
 
 	/* Pick initial centers */
@@ -506,7 +464,7 @@ ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, KmeansStat
 		}
 
 		/* Step 4: For each center c, let m(c) be mean of all points assigned */
-		ComputeNewCenters(samples, agg, newCenters, centerCounts, closestCenters, normprocinfo, normalizeprocinfo, collation, kmeansstate);
+		ComputeNewCenters(samples, agg, newCenters, centerCounts, closestCenters, normprocinfo, collation, typeInfo);
 
 		/* Step 5 */
 		for (int j = 0; j < numCenters; j++)
@@ -537,30 +495,23 @@ ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, KmeansStat
 		if (changes == 0 && iteration != 0)
 			break;
 	}
-
-	MemoryContextSwitchTo(oldCtx);
-	MemoryContextDelete(kmeansCtx);
 }
 
 /*
- * Detect issues with centers
+ * Ensure no NaN or infinite values
  */
 static void
-CheckCenters(Relation index, VectorArray centers, KmeansState * kmeansstate)
+CheckElements(VectorArray centers, const IvfflatTypeInfo * typeInfo)
 {
-	FmgrInfo   *normprocinfo;
 	float	   *scratch = palloc(sizeof(float) * centers->dim);
 
-	if (centers->length != centers->maxlen)
-		elog(ERROR, "Not enough centers. Please report a bug.");
-
-	/* Ensure no NaN or infinite values */
 	for (int i = 0; i < centers->length; i++)
 	{
 		for (int j = 0; j < centers->dim; j++)
 			scratch[j] = 0;
 
-		SumCenter(kmeansstate->sumcenterprocinfo, VectorArrayGet(centers, i), scratch);
+		/* /fp:fast may not propagate NaN with MSVC, but that's alright */
+		typeInfo->sumCenter(VectorArrayGet(centers, i), scratch);
 
 		for (int j = 0; j < centers->dim; j++)
 		{
@@ -571,32 +522,41 @@ CheckCenters(Relation index, VectorArray centers, KmeansState * kmeansstate)
 				elog(ERROR, "Infinite value detected. Please report a bug.");
 		}
 	}
-
-	/* Ensure no zero vectors for cosine distance */
-	/* Check NORM_PROC instead of KMEANS_NORM_PROC */
-	normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
-	if (normprocinfo != NULL)
-	{
-		Oid			collation = index->rd_indcollation[0];
-
-		for (int i = 0; i < centers->length; i++)
-		{
-			double		norm = DatumGetFloat8(FunctionCall1Coll(normprocinfo, collation, PointerGetDatum(VectorArrayGet(centers, i))));
-
-			if (norm == 0)
-				elog(ERROR, "Zero norm detected. Please report a bug.");
-		}
-	}
-
-	pfree(scratch);
 }
 
+/*
+ * Ensure no zero vectors for cosine distance
+ */
 static void
-InitKmeansState(KmeansState * kmeansstate, Relation index, int dimensions)
+CheckNorms(VectorArray centers, Relation index)
 {
-	kmeansstate->dimensions = dimensions;
-	kmeansstate->updatecenterprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_UPDATE_CENTER_PROC);
-	kmeansstate->sumcenterprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_SUM_CENTER_PROC);
+	/* Check NORM_PROC instead of KMEANS_NORM_PROC */
+	FmgrInfo   *normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
+	Oid			collation = index->rd_indcollation[0];
+
+	if (normprocinfo == NULL)
+		return;
+
+	for (int i = 0; i < centers->length; i++)
+	{
+		double		norm = DatumGetFloat8(FunctionCall1Coll(normprocinfo, collation, PointerGetDatum(VectorArrayGet(centers, i))));
+
+		if (norm == 0)
+			elog(ERROR, "Zero norm detected. Please report a bug.");
+	}
+}
+
+/*
+ * Detect issues with centers
+ */
+static void
+CheckCenters(Relation index, VectorArray centers, const IvfflatTypeInfo * typeInfo)
+{
+	if (centers->length != centers->maxlen)
+		elog(ERROR, "Not enough centers. Please report a bug.");
+
+	CheckElements(centers, typeInfo);
+	CheckNorms(centers, index);
 }
 
 /*
@@ -604,16 +564,20 @@ InitKmeansState(KmeansState * kmeansstate, Relation index, int dimensions)
  * We use spherical k-means for inner product and cosine
  */
 void
-IvfflatKmeans(Relation index, VectorArray samples, VectorArray centers)
+IvfflatKmeans(Relation index, VectorArray samples, VectorArray centers, const IvfflatTypeInfo * typeInfo)
 {
-	KmeansState kmeansstate;
-
-	InitKmeansState(&kmeansstate, index, centers->dim);
+	MemoryContext kmeansCtx = AllocSetContextCreate(CurrentMemoryContext,
+													"Ivfflat kmeans temporary context",
+													ALLOCSET_DEFAULT_SIZES);
+	MemoryContext oldCtx = MemoryContextSwitchTo(kmeansCtx);
 
 	if (samples->length == 0)
-		RandomCenters(index, centers, &kmeansstate);
+		RandomCenters(index, centers, typeInfo);
 	else
-		ElkanKmeans(index, samples, centers, &kmeansstate);
+		ElkanKmeans(index, samples, centers, typeInfo);
 
-	CheckCenters(index, centers, &kmeansstate);
+	CheckCenters(index, centers, typeInfo);
+
+	MemoryContextSwitchTo(oldCtx);
+	MemoryContextDelete(kmeansCtx);
 }

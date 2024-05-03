@@ -63,7 +63,7 @@ AddSample(Datum *values, IvfflatBuildState * buildstate)
 		if (!IvfflatCheckNorm(buildstate->kmeansnormprocinfo, buildstate->collation, value))
 			return;
 
-		value = IvfflatNormValue(buildstate->normalizeprocinfo, buildstate->collation, value);
+		value = IvfflatNormValue(buildstate->typeInfo, buildstate->collation, value);
 	}
 
 	if (samples->length < targsamples)
@@ -161,7 +161,7 @@ AddTupleToSort(Relation index, ItemPointer tid, Datum *values, IvfflatBuildState
 		if (!IvfflatCheckNorm(buildstate->normprocinfo, buildstate->collation, value))
 			return;
 
-		value = IvfflatNormValue(buildstate->normalizeprocinfo, buildstate->collation, value);
+		value = IvfflatNormValue(buildstate->typeInfo, buildstate->collation, value);
 	}
 
 	/* Find the list that minimizes the distance */
@@ -320,47 +320,15 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 }
 
 /*
- * Get max dimensions
- */
-static int
-GetMaxDimensions(Relation index)
-{
-	FmgrInfo   *procinfo = IvfflatOptionalProcInfo(index, IVFFLAT_MAX_DIMS_PROC);
-
-	if (procinfo == NULL)
-		return IVFFLAT_MAX_DIM;
-
-	return DatumGetInt32(FunctionCall1(procinfo, PointerGetDatum(NULL)));
-}
-
-/*
- * Get item size
- */
-static Size
-GetItemSize(int maxDimensions, int dimensions)
-{
-	/* TODO Improve */
-	if (maxDimensions == IVFFLAT_MAX_DIM)
-		return VECTOR_SIZE(dimensions);
-	else if (maxDimensions == IVFFLAT_MAX_DIM * 2)
-		return HALFVEC_SIZE(dimensions);
-	else if (maxDimensions == IVFFLAT_MAX_DIM * 32)
-		return VARBITTOTALLEN(dimensions);
-	else
-		elog(ERROR, "Unsupported type");
-}
-
-/*
  * Initialize the build state
  */
 static void
 InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, IndexInfo *indexInfo)
 {
-	int			maxDimensions;
-
 	buildstate->heap = heap;
 	buildstate->index = index;
 	buildstate->indexInfo = indexInfo;
+	buildstate->typeInfo = IvfflatGetTypeInfo(index);
 
 	buildstate->lists = IvfflatGetLists(index);
 	buildstate->dimensions = TupleDescAttr(index->rd_att, 0)->atttypmod;
@@ -369,14 +337,12 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 	if (TupleDescAttr(index->rd_att, 0)->atttypid == VARBITOID)
 		elog(ERROR, "type not supported for ivfflat index");
 
-	maxDimensions = GetMaxDimensions(index);
-
 	/* Require column to have dimensions to be indexed */
 	if (buildstate->dimensions < 0)
 		elog(ERROR, "column does not have dimensions");
 
-	if (buildstate->dimensions > maxDimensions)
-		elog(ERROR, "column cannot have more than %d dimensions for ivfflat index", maxDimensions);
+	if (buildstate->dimensions > buildstate->typeInfo->maxDimensions)
+		elog(ERROR, "column cannot have more than %d dimensions for ivfflat index", buildstate->typeInfo->maxDimensions);
 
 	buildstate->reltuples = 0;
 	buildstate->indtuples = 0;
@@ -385,7 +351,6 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 	buildstate->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
 	buildstate->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
 	buildstate->kmeansnormprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
-	buildstate->normalizeprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORMALIZE_PROC);
 	buildstate->collation = index->rd_indcollation[0];
 
 	/* Require more than one dimension for spherical k-means */
@@ -400,7 +365,7 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 
 	buildstate->slot = MakeSingleTupleTableSlot(buildstate->tupdesc, &TTSOpsVirtual);
 
-	buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions, GetItemSize(maxDimensions, buildstate->dimensions));
+	buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions, buildstate->typeInfo->itemSize(buildstate->dimensions));
 	buildstate->listInfo = palloc(sizeof(ListInfo) * buildstate->lists);
 
 	buildstate->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
@@ -470,7 +435,7 @@ ComputeCenters(IvfflatBuildState * buildstate)
 	}
 
 	/* Calculate centers */
-	IvfflatBench("k-means", IvfflatKmeans(buildstate->index, buildstate->samples, buildstate->centers));
+	IvfflatBench("k-means", IvfflatKmeans(buildstate->index, buildstate->samples, buildstate->centers, buildstate->typeInfo));
 
 	/* Free samples before we allocate more memory */
 	VectorArrayFree(buildstate->samples);

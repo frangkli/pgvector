@@ -59,9 +59,9 @@ GetScanValue(IndexScanDesc scan)
 		Assert(!VARATT_IS_COMPRESSED(DatumGetPointer(value)));
 		Assert(!VARATT_IS_EXTENDED(DatumGetPointer(value)));
 
-		/* Fine if normalization fails */
+		/* Normalize if needed */
 		if (so->normprocinfo != NULL)
-			value = HnswNormValue(so->normalizeprocinfo, so->collation, value);
+			value = HnswNormValue(so->typeInfo, so->collation, value);
 	}
 
 	return value;
@@ -79,6 +79,7 @@ hnswbeginscan(Relation index, int nkeys, int norderbys)
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 
 	so = (HnswScanOpaque) palloc(sizeof(HnswScanOpaqueData));
+	so->typeInfo = HnswGetTypeInfo(index);
 	so->first = true;
 	so->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
 									   "Hnsw scan temporary context",
@@ -87,7 +88,6 @@ hnswbeginscan(Relation index, int nkeys, int norderbys)
 	/* Set support functions */
 	so->procinfo = index_getprocinfo(index, 1, HNSW_DISTANCE_PROC);
 	so->normprocinfo = HnswOptionalProcInfo(index, HNSW_NORM_PROC);
-	so->normalizeprocinfo = HnswOptionalProcInfo(index, HNSW_NORMALIZE_PROC);
 	so->collation = index->rd_indcollation[0];
 
 	scan->opaque = so;

@@ -28,10 +28,7 @@
 #define IVFFLAT_NORM_PROC 2
 #define IVFFLAT_KMEANS_DISTANCE_PROC 3
 #define IVFFLAT_KMEANS_NORM_PROC 4
-#define IVFFLAT_NORMALIZE_PROC 5
-#define IVFFLAT_MAX_DIMS_PROC 6
-#define IVFFLAT_UPDATE_CENTER_PROC 7
-#define IVFFLAT_SUM_CENTER_PROC 8
+#define IVFFLAT_TYPE_INFO_PROC 5
 
 #define IVFFLAT_VERSION	1
 #define IVFFLAT_MAGIC_NUMBER 0x14FF1A7
@@ -152,12 +149,22 @@ typedef struct IvfflatLeader
 	char	   *ivfcenters;
 }			IvfflatLeader;
 
+typedef struct IvfflatTypeInfo
+{
+	int			maxDimensions;
+	Datum		(*normalize) (PG_FUNCTION_ARGS);
+	Size		(*itemSize) (int dimensions);
+	void		(*updateCenter) (Pointer v, int dimensions, float *x);
+	void		(*sumCenter) (Pointer v, float *x);
+}			IvfflatTypeInfo;
+
 typedef struct IvfflatBuildState
 {
 	/* Info */
 	Relation	heap;
 	Relation	index;
 	IndexInfo  *indexInfo;
+	const		IvfflatTypeInfo *typeInfo;
 
 	/* Settings */
 	int			dimensions;
@@ -171,7 +178,6 @@ typedef struct IvfflatBuildState
 	FmgrInfo   *procinfo;
 	FmgrInfo   *normprocinfo;
 	FmgrInfo   *kmeansnormprocinfo;
-	FmgrInfo   *normalizeprocinfo;
 	Oid			collation;
 
 	/* Variables */
@@ -239,6 +245,7 @@ typedef struct IvfflatScanList
 
 typedef struct IvfflatScanOpaqueData
 {
+	const		IvfflatTypeInfo *typeInfo;
 	int			probes;
 	int			dimensions;
 	bool		first;
@@ -252,7 +259,6 @@ typedef struct IvfflatScanOpaqueData
 	/* Support functions */
 	FmgrInfo   *procinfo;
 	FmgrInfo   *normprocinfo;
-	FmgrInfo   *normalizeprocinfo;
 	Oid			collation;
 	Datum		(*distfunc) (FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2);
 
@@ -264,16 +270,27 @@ typedef struct IvfflatScanOpaqueData
 typedef IvfflatScanOpaqueData * IvfflatScanOpaque;
 
 #define VECTOR_ARRAY_SIZE(_length, _size) (sizeof(VectorArrayData) + (_length) * MAXALIGN(_size))
-#define VECTOR_ARRAY_OFFSET(_arr, _offset) ((char*) (_arr)->items + (_offset) * (_arr)->itemsize)
-#define VectorArrayGet(_arr, _offset) VECTOR_ARRAY_OFFSET(_arr, _offset)
-#define VectorArraySet(_arr, _offset, _val) memcpy(VECTOR_ARRAY_OFFSET(_arr, _offset), _val, VARSIZE_ANY(_val))
+
+/* Use functions instead of macros to avoid double evaluation */
+
+static inline Pointer
+VectorArrayGet(VectorArray arr, int offset)
+{
+	return ((char *) arr->items) + (offset * arr->itemsize);
+}
+
+static inline void
+VectorArraySet(VectorArray arr, int offset, Pointer val)
+{
+	memcpy(VectorArrayGet(arr, offset), val, VARSIZE_ANY(val));
+}
 
 /* Methods */
 VectorArray VectorArrayInit(int maxlen, int dimensions, Size itemsize);
 void		VectorArrayFree(VectorArray arr);
-void		IvfflatKmeans(Relation index, VectorArray samples, VectorArray centers);
+void		IvfflatKmeans(Relation index, VectorArray samples, VectorArray centers, const IvfflatTypeInfo * typeInfo);
 FmgrInfo   *IvfflatOptionalProcInfo(Relation index, uint16 procnum);
-Datum		IvfflatNormValue(FmgrInfo *procinfo, Oid collation, Datum value);
+Datum		IvfflatNormValue(const IvfflatTypeInfo * typeInfo, Oid collation, Datum value);
 bool		IvfflatCheckNorm(FmgrInfo *procinfo, Oid collation, Datum value);
 int			IvfflatGetLists(Relation index);
 void		IvfflatGetMetaPageInfo(Relation index, int *lists, int *dimensions);
@@ -284,6 +301,7 @@ Buffer		IvfflatNewBuffer(Relation index, ForkNumber forkNum);
 void		IvfflatInitPage(Buffer buf, Page page);
 void		IvfflatInitRegisterPage(Relation index, Buffer *buf, Page *page, GenericXLogState **state);
 void		IvfflatInit(void);
+const		IvfflatTypeInfo *IvfflatGetTypeInfo(Relation index);
 PGDLLEXPORT void IvfflatParallelBuildMain(dsm_segment *seg, shm_toc *toc);
 
 /* Index access methods */
