@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"command": "make && make install",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"label": "make: make install",
+			"problemMatcher": []
+		}
+	]
+}
