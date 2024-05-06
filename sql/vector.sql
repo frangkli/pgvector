@@ -61,6 +61,9 @@ CREATE FUNCTION binary_quantize(vector) RETURNS bit
 CREATE FUNCTION subvector(vector, int, int) RETURNS vector
 	AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+CREATE FUNCTION mahalanobis_distance(vector, vector[]) RETURNS float8
+	AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- vector private functions
 
 CREATE FUNCTION vector_add(vector, vector) RETURNS vector
@@ -179,8 +182,13 @@ CREATE OPERATOR <-> (
 	COMMUTATOR = '<->'
 );
 
-CREATE OPERATOR <!> (
+CREATE OPERATOR <-> (
 	LEFTARG = vector, RIGHTARG = vector[], PROCEDURE = l2_distance_multi,
+	COMMUTATOR = '<->'
+);
+
+CREATE OPERATOR <!> (
+	LEFTARG = vector, RIGHTARG = vector[], PROCEDURE = mahalanobis_distance,
 	COMMUTATOR = '<!>'
 );
 

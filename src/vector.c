@@ -1342,8 +1342,106 @@ l2_distance_multi(PG_FUNCTION_ARGS)
 
     for (int i = 0; i < nelemsp; i++) {
         Vector* b = DatumGetVector(elemsp[i]);
+        CheckDims(a, b);
 		result += sqrt((double) VectorL2SquaredDistance(a->dim, a->x, b->x));
+        PrintVector("vec", b);
     }
 
+	pfree(elemsp);
+
 	PG_RETURN_FLOAT8(result);
+}
+
+static double*
+calculate_mean(Vector** data, int dim, int n) {
+	double *mean = (double *) palloc(dim * sizeof(double));
+	for (int i = 0; i < dim; i++) {
+		mean[i] = 0.0;
+		for (int j = 0; j < n; j++) {
+			mean[i] += data[j]->x[i];
+		}
+		mean[i] /= n;
+	}
+	return mean;
+}
+
+static void
+calculate_covariance(Vector** data, int dim, int n, double** covariance)
+{
+	for (int i = 0; i < dim; i++) {
+		covariance[i] = (double *) palloc(dim * sizeof(double));
+		for (int j = 0; j < dim; j++) {
+			covariance[i][j] = 0.0;
+			for (int k = 0; k < n; k++) {
+				covariance[i][j] += data[k]->x[i] * data[k]->x[j];
+			}
+			covariance[i][j] /= n;
+		}
+	}
+}
+
+/*
+ * Calculate the Mahalanobis distance given a vector and inverted covariance matrix
+ */
+static double
+VectorMahalanobisDistance(float *a, Vector **covar, int dim)
+{
+	double distance = 0.0;
+	for (int i = 0; i < dim; i++) {
+		double temp = 0.0;
+		for (int j = 0; j < dim; j++) {
+			temp += a[j] * covar[j]->x[i];
+		}
+		distance += temp * a[i];
+	}
+	return sqrt(distance);
+}
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(mahalanobis_distance);
+Datum
+mahalanobis_distance(PG_FUNCTION_ARGS)
+{
+    Vector      *a = PG_GETARG_VECTOR_P(0);
+	ArrayType   *array = PG_GETARG_ARRAYTYPE_P(1);
+    Vector     **covariance;
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+	Datum	   *elemsp;
+	int			nelemsp;
+	double      result = 0.0;
+
+    get_typlenbyvalalign(ARR_ELEMTYPE(array), &typlen, &typbyval, &typalign);
+    deconstruct_array(array, ARR_ELEMTYPE(array), typlen, typbyval, typalign, &elemsp, NULL, &nelemsp);
+
+    covariance = (Vector **) palloc(nelemsp * sizeof(Vector *));
+	CheckExpectedDim(a->dim, nelemsp);
+    for (int i = 0; i < nelemsp; i++) {
+        covariance[i] = DatumGetVector(elemsp[i]);
+        CheckDims(a, covariance[i]);
+    }
+
+	result = VectorMahalanobisDistance(a->x, covariance, a->dim);
+
+	// Demean vector
+	// mean = calculate_mean(vectors, a->dim, nelemsp);
+	// for (int i = 0; i < a->dim; i++) {
+	// 	a->x[i] -= mean[i];
+	// }
+	// pfree(mean);
+	// PrintVector("a_", a);
+
+	// Calculate covariance matrix
+	// covariance = (double **) palloc(a->dim * sizeof(double *));
+	// calculate_covariance(vectors, a->dim, nelemsp, covariance);
+	// for (int i = 0; i < a->dim; i++) {
+	// 	for (int j = 0; j < a->dim; j++) {
+	// 		elog(INFO, "covariance[%d][%d] = %f", i, j, covariance[i][j]);
+	// 	}
+	// }
+
+	pfree(covariance);
+	pfree(elemsp);
+
+    PG_RETURN_FLOAT8(result);
 }
