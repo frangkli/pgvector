@@ -1337,16 +1337,11 @@ l2_distance_multi(PG_FUNCTION_ARGS)
 	int			nelemsp;
 	double      result = 0.0;
 
-    PrintVector("a", a);
-
     get_typlenbyvalalign(ARR_ELEMTYPE(array), &typlen, &typbyval, &typalign);
     deconstruct_array(array, ARR_ELEMTYPE(array), typlen, typbyval, typalign, &elemsp, NULL, &nelemsp);
 
-    elog(INFO, "nelemsp: %d", nelemsp);
-
     for (int i = 0; i < nelemsp; i++) {
         Vector* b = DatumGetVector(elemsp[i]);
-        PrintVector("vec", b);
 		result += sqrt((double) VectorL2SquaredDistance(a->dim, a->x, b->x));
     }
 
