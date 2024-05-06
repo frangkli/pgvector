@@ -34,6 +34,9 @@ CREATE TYPE vector (
 CREATE FUNCTION l2_distance(vector, vector) RETURNS float8
 	AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+CREATE FUNCTION l2_distance_multi(vector, vector[]) RETURNS float8
+	AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 CREATE FUNCTION inner_product(vector, vector) RETURNS float8
 	AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
@@ -174,6 +177,11 @@ CREATE CAST (numeric[] AS vector)
 CREATE OPERATOR <-> (
 	LEFTARG = vector, RIGHTARG = vector, PROCEDURE = l2_distance,
 	COMMUTATOR = '<->'
+);
+
+CREATE OPERATOR <!> (
+	LEFTARG = vector, RIGHTARG = vector[], PROCEDURE = l2_distance_multi,
+	COMMUTATOR = '<!>'
 );
 
 CREATE OPERATOR <#> (

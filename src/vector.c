@@ -1323,3 +1323,32 @@ sparsevec_to_vector(PG_FUNCTION_ARGS)
 
 	PG_RETURN_POINTER(result);
 }
+
+PGDLLEXPORT PG_FUNCTION_INFO_V1(l2_distance_multi);
+Datum
+l2_distance_multi(PG_FUNCTION_ARGS)
+{
+	Vector	   *a = PG_GETARG_VECTOR_P(0);
+	ArrayType  *array = PG_GETARG_ARRAYTYPE_P(1);
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+	Datum	   *elemsp;
+	int			nelemsp;
+	double      result = 0.0;
+
+    PrintVector("a", a);
+
+    get_typlenbyvalalign(ARR_ELEMTYPE(array), &typlen, &typbyval, &typalign);
+    deconstruct_array(array, ARR_ELEMTYPE(array), typlen, typbyval, typalign, &elemsp, NULL, &nelemsp);
+
+    elog(INFO, "nelemsp: %d", nelemsp);
+
+    for (int i = 0; i < nelemsp; i++) {
+        Vector* b = DatumGetVector(elemsp[i]);
+        PrintVector("vec", b);
+		result += sqrt((double) VectorL2SquaredDistance(a->dim, a->x, b->x));
+    }
+
+	PG_RETURN_FLOAT8(result);
+}
