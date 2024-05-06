@@ -9,13 +9,13 @@
                 "/opt/homebrew/include/**",
                 "/opt/homebrew/opt/postgresql@15/include/**"
             ],
-            "defines": [],
+            "defines": ["true=1", "false=0"],
             "macFrameworkPath": [
                 "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks"
             ],
             "compilerPath": "/usr/bin/gcc",
-            "cStandard": "c17",
-            "cppStandard": "c++17",
+            "cStandard": "c23",
+            "cppStandard": "c++23",
             "intelliSenseMode": "macos-clang-arm64"
         }
     ],
