@@ -217,6 +217,8 @@ L2 distance
 CREATE INDEX ON items USING hnsw (embedding vector_l2_ops);
 ```
 
+Note: Use `halfvec_l2_ops` for `halfvec` and `sparsevec_l2_ops` for `sparsevec` (and similar with the other distance functions)
+
 Inner product
 
 ```sql
@@ -344,6 +346,8 @@ L2 distance
 ```sql
 CREATE INDEX ON items USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);
 ```
+
+Note: Use `halfvec_l2_ops` for `halfvec` (and similar with the other distance functions)
 
 Inner product
 
@@ -790,7 +794,7 @@ SELECT pg_size_pretty(pg_relation_size('index_name'));
 
 #### Why isn’t a query using an index?
 
-The query needs to have an `ORDER BY` and `LIMIT`, and the `ORDER BY` must be the result of a distance operator, not an expression.
+The query needs to have an `ORDER BY` and `LIMIT`, and the `ORDER BY` must be the result of a distance operator (not an expression) in ascending order.
 
 ```sql
 -- index
